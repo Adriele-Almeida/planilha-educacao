@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Planilha de Educação Financeira</title>
+    <!-- Carrega o Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Configuração de fonte */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f1f5f9; /* slate-100 */
+        }
+        /* Estilos básicos para input de número */
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input[type="number"] {
+            -moz-appearance: textfield;
+        }
+        .scrollable-list {
+            max-height: 200px;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #3b82f6 #f1f5f9;
+        }
+        .scrollable-list::-webkit-scrollbar {
+            width: 8px;
+        }
+        .scrollable-list::-webkit-scrollbar-thumb {
+            background-color: #3b82f6; /* blue-500 */
+            border-radius: 10px;
+        }
+        .scrollable-list::-webkit-scrollbar-track {
+            background-color: #f1f5f9; /* slate-100 */
+        }
+    </style>
+    <!-- Firebase SDK Modules -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, getDoc, collection, query, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Variáveis Globais de Configuração
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Configura o nível de log para debug no console (útil para Firebase)
+        setLogLevel('Debug');
+
+        let app;
+        let db;
+        let auth;
+        let userId = null;
+        let financialData = {
+            incomes: [],
+            expenses: [],
+            savingsGoal: 0,
+        };
+        const DATA_COLLECTION = "financial_sheet";
+        const DOC_ID = "budget";
+
+        // Funções Auxiliares
+        const formatCurrency = (value) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
+        const sanitizeNumber = (value) => {
+            const num = parseFloat(String(value).replace(',', '.'));
+            return isNaN(num) ? 0 : num;
+        };
+
+        const financialDataPath = () => {
+            if (!userId) {
+                console.error("UserID not available for Firestore path.");
+                // Retorna um caminho temporário ou null
+                return null;
+            }
+            // Caminho privado: /artifacts/{appId}/users/{userId}/{your_collection_name}/{documentId}
+            return doc(db, 'artifacts', appId, 'users', userId, DATA_COLLECTION, DOC_ID);
+        };
+
+        // --- LÓGICA DO FIREBASE E DADOS ---
+
+        async function initFirebaseAndAuth() {
+            try {
+                // Inicializa o Firebase
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Autenticação
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                // Listener de autenticação
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('user-id-display').textContent = `ID do Usuário: ${userId}`;
+                        setupDataListener();
+                    } else {
+                        // Caso de fallback (sem autenticação) - usa UUID para tentar simular um usuário
+                        userId = crypto.randomUUID();
+                        document.getElementById('user-id-display').textContent = `ID Anônimo: ${userId}`;
+                        // Tenta carregar dados, mas pode falhar dependendo das regras de segurança
+                        setupDataListener();
+                    }
+                });
+            } catch (error) {
+                console.error("Erro ao inicializar Firebase e autenticação:", error);
+                document.getElementById('app-status').textContent = "Erro de conexão. Verifique o console.";
+            }
+        }
+
+        function setupDataListener() {
+            const docRef = financialDataPath();
+            if (!docRef) return;
+
+            // Escuta as alterações em tempo real
+            onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    financialData = docSnap.data();
+                    console.log("Dados carregados do Firestore:", financialData);
+                } else {
+                    console.log("Nenhum dado encontrado. Usando estrutura inicial.");
+                    saveFinancialData(); // Cria o documento inicial
+                }
+                renderApp();
+            }, (error) => {
+                console.error("Erro ao escutar dados do Firestore:", error);
+                document.getElementById('app-status').textContent = "Erro ao carregar dados em tempo real.";
+            });
+        }
+
+        async function saveFinancialData() {
+            const docRef = financialDataPath();
+            if (!docRef) {
+                console.error("Não é possível salvar, docRef é nulo.");
+                return;
+            }
+            try {
+                // Remove campos vazios e garante que são números
+                const dataToSave = {
+                    incomes: financialData.incomes.filter(i => i.name && i.value > 0),
+                    expenses: financialData.expenses.filter(e => e.name && e.value > 0),
+                    savingsGoal: financialData.savingsGoal > 0 ? financialData.savingsGoal : 0,
+                };
+
+                await setDoc(docRef, dataToSave, { merge: true });
+                console.log("Dados salvos com sucesso.");
+            } catch (e) {
+                console.error("Erro ao salvar dados:", e);
+                document.getElementById('app-status').textContent = "Erro ao salvar dados. Verifique o console.";
+            }
+        }
+
+        // --- LÓGICA DE CÁLCULO E RENDERIZAÇÃO ---
+
+        function calculateTotals() {
+            const totalIncome = financialData.incomes.reduce((sum, item) => sum + sanitizeNumber(item.value), 0);
+            const totalExpense = financialData.expenses.reduce((sum, item) => sum + sanitizeNumber(item.value), 0);
+            const netBalance = totalIncome - totalExpense;
+            return { totalIncome, totalExpense, netBalance };
+        }
+
+        function renderApp() {
+            const { totalIncome, totalExpense, netBalance } = calculateTotals();
+            const savingsGoal = sanitizeNumber(financialData.savingsGoal);
+
+            // 1. Renderiza o Resumo
+            document.getElementById('total-income').textContent = formatCurrency(totalIncome);
+            document.getElementById('total-expense').textContent = formatCurrency(totalExpense);
+            document.getElementById('net-balance').textContent = formatCurrency(netBalance);
+
+            // Mudar cor do Saldo
+            const balanceElement = document.getElementById('net-balance');
+            balanceElement.classList.remove('text-green-600', 'text-red-600', 'text-gray-600');
+            if (netBalance > 0) {
+                balanceElement.classList.add('text-green-600');
+            } else if (netBalance < 0) {
+                balanceElement.classList.add('text-red-600');
+            } else {
+                balanceElement.classList.add('text-gray-600');
+            }
+
+            // 2. Renderiza Listas de Receitas e Despesas
+            renderList('income-list', 'incomes', financialData.incomes, totalIncome, 'Receita');
+            renderList('expense-list', 'expenses', financialData.expenses, totalExpense, 'Despesa');
+
+            // 3. Renderiza a Meta de Poupança
+            const savingsProgress = Math.max(0, Math.min(100, (netBalance / savingsGoal) * 100)) || 0;
+            document.getElementById('savings-goal').value = savingsGoal;
+            document.getElementById('goal-display').textContent = formatCurrency(savingsGoal);
+            document.getElementById('progress-bar').style.width = `${savingsProgress}%`;
+            document.getElementById('progress-text').textContent = `${savingsProgress.toFixed(0)}% Alcançado`;
+        }
+
+        function renderList(containerId, dataKey, items, total, type) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = ''; // Limpa a lista existente
+
+            items.forEach((item, index) => {
+                const percentage = total > 0 ? (sanitizeNumber(item.value) / total) * 100 : 0;
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'flex items-center space-x-2 py-1';
+                itemDiv.innerHTML = `
+                    <input type="text" value="${item.name}" placeholder="Nome da ${type}" data-index="${index}" data-key="${dataKey}" data-field="name" class="flex-1 px-2 py-1 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm">
+                    <input type="number" value="${item.value}" placeholder="Valor" data-index="${index}" data-key="${dataKey}" data-field="value" class="w-24 px-2 py-1 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm">
+                    <span class="w-12 text-xs text-gray-500">${percentage.toFixed(0)}%</span>
+                    <button data-index="${index}" data-key="${dataKey}" class="remove-btn text-red-500 hover:text-red-700 p-1 rounded-full transition duration-150">
+                        <!-- Ícone de Lixeira (SVG) -->
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3"></path></svg>
+                    </button>
+                `;
+                container.appendChild(itemDiv);
+            });
+
+            // Adiciona um item vazio para ser preenchido
+            container.innerHTML += `
+                <div class="flex items-center space-x-2 py-1 mt-2">
+                    <input type="text" placeholder="Adicionar nova ${type}" data-index="${items.length}" data-key="${dataKey}" data-field="name" class="flex-1 px-2 py-1 border border-blue-200 bg-blue-50 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm">
+                    <input type="number" placeholder="Valor" data-index="${items.length}" data-key="${dataKey}" data-field="value" class="w-24 px-2 py-1 border border-blue-200 bg-blue-50 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm">
+                    <span class="w-12 text-xs text-gray-400">-</span>
+                    <span class="w-6 p-1"></span>
+                </div>
+            `;
+            // Reatacha os listeners
+            attachEventListeners();
+        }
+
+        // --- MANIPULAÇÃO DE EVENTOS ---
+
+        function handleInputChange(event) {
+            const input = event.target;
+            const dataKey = input.dataset.key;
+            const index = parseInt(input.dataset.index, 10);
+            const field = input.dataset.field;
+            let value = input.value;
+
+            if (dataKey && !isNaN(index) && field) {
+                // Se for um campo de valor, sanitize e garanta que é um número
+                if (field === 'value') {
+                    value = sanitizeNumber(value);
+                }
+
+                // Garante que o item existe
+                if (!financialData[dataKey][index]) {
+                    // Se for um novo item (index == items.length)
+                    if (field === 'name' && value) {
+                        // Se for um novo nome e não for vazio, inicializa
+                        financialData[dataKey].push({ name: value, value: 0 });
+                    } else if (field === 'value' && value > 0) {
+                        // Se for um novo valor e for maior que zero, inicializa
+                         financialData[dataKey].push({ name: `Novo ${dataKey === 'incomes' ? 'Receita' : 'Despesa'}`, value: value });
+                    } else {
+                        // Não faz nada se o novo campo estiver vazio
+                        return;
+                    }
+                } else {
+                    // Atualiza um item existente
+                    financialData[dataKey][index][field] = value;
+                }
+
+                // Recarrega e salva
+                // Filtra itens vazios antes de salvar para não poluir o banco
+                financialData[dataKey] = financialData[dataKey].filter(item => item.name || item.value > 0);
+                saveFinancialData();
+            }
+        }
+
+        function handleGoalChange(event) {
+            financialData.savingsGoal = sanitizeNumber(event.target.value);
+            saveFinancialData();
+        }
+
+        function handleRemoveItem(event) {
+            if (event.target.closest('.remove-btn')) {
+                const btn = event.target.closest('.remove-btn');
+                const dataKey = btn.dataset.key;
+                const index = parseInt(btn.dataset.index, 10);
+
+                if (dataKey && !isNaN(index)) {
+                    // Remove o item do array
+                    financialData[dataKey].splice(index, 1);
+                    saveFinancialData();
+                }
+            }
+        }
+
+        function attachEventListeners() {
+            // Remove listeners anteriores para evitar duplicação
+            document.querySelectorAll('input[data-key]').forEach(input => {
+                input.removeEventListener('change', handleInputChange);
+            });
+            document.querySelectorAll('.remove-btn').forEach(btn => {
+                btn.removeEventListener('click', handleRemoveItem);
+            });
+
+            // Adiciona listeners para inputs
+            document.querySelectorAll('input[data-key]').forEach(input => {
+                input.addEventListener('change', handleInputChange);
+            });
+
+            // Adiciona listener para remover itens
+            document.querySelectorAll('.remove-btn').forEach(btn => {
+                btn.addEventListener('click', handleRemoveItem);
+            });
+
+            // Listener para Meta de Poupança
+            const goalInput = document.getElementById('savings-goal');
+            goalInput.removeEventListener('change', handleGoalChange);
+            goalInput.addEventListener('change', handleGoalChange);
+        }
+
+        window.onload = function () {
+            initFirebaseAndAuth();
+        };
+    </script>
+</head>
+<body>
+
+    <div class="min-h-screen p-4 md:p-8 bg-gray-50">
+        <!-- Header e Status -->
+        <header class="mb-6 pb-4 border-b border-blue-200">
+            <h1 class="text-3xl font-bold text-blue-800">Minha Planilha Financeira Interativa</h1>
+            <p id="user-id-display" class="text-sm text-gray-500 mt-1"></p>
+            <p id="app-status" class="text-xs text-green-600 mt-1">Carregando dados...</p>
+        </header>
+
+        <!-- Container Principal: Resumo e Detalhes -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+            <!-- Coluna 1: Resumo Financeiro -->
+            <div class="lg:col-span-1 bg-white p-6 rounded-xl shadow-lg border border-blue-100">
+                <h2 class="text-xl font-semibold text-gray-700 mb-4">Resumo Mensal</h2>
+
+                <!-- Cartão de Receitas -->
+                <div class="mb-4 p-4 bg-green-50 rounded-lg border border-green-200">
+                    <div class="text-sm font-medium text-green-700">Total de Receitas (R$)</div>
+                    <div id="total-income" class="text-2xl font-bold text-green-600 mt-1">R$ 0,00</div>
+                </div>
+
+                <!-- Cartão de Despesas -->
+                <div class="mb-4 p-4 bg-red-50 rounded-lg border border-red-200">
+                    <div class="text-sm font-medium text-red-700">Total de Despesas (R$)</div>
+                    <div id="total-expense" class="text-2xl font-bold text-red-600 mt-1">R$ 0,00</div>
+                </div>
+
+                <!-- Cartão de Saldo (Balance) -->
+                <div class="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                    <div class="text-md font-semibold text-blue-700">Saldo Líquido</div>
+                    <div id="net-balance" class="text-3xl font-extrabold text-gray-600 mt-1 transition duration-300">R$ 0,00</div>
+                </div>
+
+                <!-- Meta de Poupança / Progresso -->
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-700 mb-3">Meta de Poupança</h3>
+                    <div class="mb-2">
+                        <label for="savings-goal" class="block text-sm font-medium text-gray-600 mb-1">Valor da Meta (R$):</label>
+                        <input type="number" id="savings-goal" placeholder="1000.00" value="0" class="w-full px-3 py-2 border border-blue-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150">
+                    </div>
+
+                    <div class="bg-gray-200 rounded-full h-3.5 mb-2">
+                        <div id="progress-bar" class="bg-indigo-500 h-3.5 rounded-full transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                    <div class="flex justify-between text-sm text-gray-600">
+                        <span>Meta: <span id="goal-display">R$ 0,00</span></span>
+                        <span id="progress-text">0% Alcançado</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Coluna 2 e 3: Detalhes de Receitas e Despesas -->
+            <div class="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                <!-- Bloco de Receitas -->
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-green-100">
+                    <h2 class="text-xl font-semibold text-green-700 mb-4 flex items-center">
+                        <!-- Icone de Receita (SVG) -->
+                        <svg class="w-6 h-6 mr-2 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c1.657 0 3 .895 3 2s-1.343 2-3 2v5m0-10c-1.657 0-3 .895-3 2s1.343 2 3 2m-3 7h6m-3-4h.01"></path></svg>
+                        Detalhes das Receitas
+                    </h2>
+                    <div id="income-list" class="scrollable-list">
+                        <!-- Conteúdo gerado por JS -->
+                    </div>
+                </div>
+
+                <!-- Bloco de Despesas -->
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-red-100">
+                    <h2 class="text-xl font-semibold text-red-700 mb-4 flex items-center">
+                        <!-- Icone de Despesa (SVG) -->
+                        <svg class="w-6 h-6 mr-2 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+                        Detalhes das Despesas
+                    </h2>
+                    <div id="expense-list" class="scrollable-list">
+                        <!-- Conteúdo gerado por JS -->
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Rodapé / Informação -->
+        <footer class="mt-8 pt-4 border-t border-gray-200 text-center text-sm text-gray-500">
+            <p>Esta planilha é interativa e salva automaticamente seus dados no banco de dados Firestore.</p>
+        </footer>
+    </div>
+
+</body>
+</html>
